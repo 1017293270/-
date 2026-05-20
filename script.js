@@ -2,14 +2,18 @@ const SECTION_SELECTOR = ".story-section";
 const ACTIVE_CLASS = "is-active";
 const SMOOTHING = 0.075;
 const DPR_LIMIT = 2;
+const THREE_PARTICLE_COUNT = 520;
+const THREE_CAMERA_BASE_Z = 8.5;
+const THREE_CAMERA_TRAVEL = 3.2;
 const HAS_REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const sections = Array.from(document.querySelectorAll(SECTION_SELECTOR));
 const navButtons = Array.from(document.querySelectorAll("[data-jump]"));
 const progressFill = document.getElementById("progressFill");
 const progressPercent = document.getElementById("progressPercent");
-const canvas = document.getElementById("sceneCanvas");
-const context = canvas.getContext("2d");
+const fallbackCanvas = document.getElementById("sceneCanvas");
+const context = fallbackCanvas.getContext("2d");
+const webglCanvas = document.getElementById("webglCanvas");
 
 let targetScroll = window.scrollY;
 let easedScroll = window.scrollY;
@@ -19,6 +23,13 @@ let viewportHeight = window.innerHeight;
 let particles = [];
 let lenis = null;
 let isGsapMode = false;
+let threeScene = null;
+window.__scrollDemoStatus = {
+  background: "2d",
+  lenis: false,
+  gsap: false,
+  three: false,
+};
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
@@ -43,10 +54,10 @@ function resizeCanvas() {
   viewportHeight = window.innerHeight;
 
   const dpr = Math.min(window.devicePixelRatio || 1, DPR_LIMIT);
-  canvas.width = Math.floor(viewportWidth * dpr);
-  canvas.height = Math.floor(viewportHeight * dpr);
-  canvas.style.width = `${viewportWidth}px`;
-  canvas.style.height = `${viewportHeight}px`;
+  fallbackCanvas.width = Math.floor(viewportWidth * dpr);
+  fallbackCanvas.height = Math.floor(viewportHeight * dpr);
+  fallbackCanvas.style.width = `${viewportWidth}px`;
+  fallbackCanvas.style.height = `${viewportHeight}px`;
   context.setTransform(dpr, 0, 0, dpr, 0, 0);
 
   particles = Array.from({ length: viewportWidth < 760 ? 42 : 76 }, (_, index) => ({
@@ -56,6 +67,8 @@ function resizeCanvas() {
     drift: 0.35 + ((index * 11) % 12) / 20,
     alpha: 0.16 + ((index * 7) % 12) / 100,
   }));
+
+  resizeThreeScene();
 }
 
 function splitHeadlines() {
@@ -117,6 +130,11 @@ function updateCards(scrollValue) {
 }
 
 function drawScene(scrollValue) {
+  if (threeScene) {
+    renderThreeScene(scrollValue);
+    return;
+  }
+
   const maxScroll = document.documentElement.scrollHeight - viewportHeight;
   const pageProgress = maxScroll > 0 ? clamp(scrollValue / maxScroll, 0, 1) : 0;
   const hueShift = pageProgress * 120;
@@ -140,6 +158,188 @@ function drawScene(scrollValue) {
   drawGrid(pageProgress);
   drawMonolith(pageProgress);
   drawParticles(scrollValue, pageProgress);
+}
+
+function createParticlePositions() {
+  const positions = new Float32Array(THREE_PARTICLE_COUNT * 3);
+
+  for (let index = 0; index < THREE_PARTICLE_COUNT; index += 1) {
+    const stride = index * 3;
+    const ring = (index % 37) / 37;
+    const lane = Math.floor(index / 37);
+    const radius = 3.2 + (lane % 9) * 0.38;
+    const angle = ring * Math.PI * 2 + lane * 0.39;
+
+    positions[stride] = Math.cos(angle) * radius;
+    positions[stride + 1] = ((index * 19) % 140) / 14 - 5;
+    positions[stride + 2] = Math.sin(angle) * radius - 5 - (lane % 6) * 0.35;
+  }
+
+  return positions;
+}
+
+function setupThreeScene() {
+  if (!window.THREE || HAS_REDUCED_MOTION || !webglCanvas) {
+    return null;
+  }
+
+  try {
+    const THREE = window.THREE;
+    const renderer = new THREE.WebGLRenderer({
+      canvas: webglCanvas,
+      alpha: true,
+      antialias: true,
+      preserveDrawingBuffer: true,
+      powerPreference: "high-performance",
+    });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, DPR_LIMIT));
+    renderer.setSize(viewportWidth, viewportHeight, false);
+    renderer.setClearColor(0x020916, 0);
+
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x06122a, 0.065);
+
+    const camera = new THREE.PerspectiveCamera(42, viewportWidth / viewportHeight, 0.1, 80);
+    camera.position.set(0, 1.1, THREE_CAMERA_BASE_Z);
+
+    const rig = new THREE.Group();
+    scene.add(rig);
+
+    const coreGeometry = new THREE.BoxGeometry(2.2, 2.2, 2.2, 12, 12, 12);
+    const coreMaterial = new THREE.MeshStandardMaterial({
+      color: 0x58a7ff,
+      emissive: 0x062a66,
+      metalness: 0.18,
+      roughness: 0.38,
+      transparent: true,
+      opacity: 0.36,
+    });
+    const core = new THREE.Mesh(coreGeometry, coreMaterial);
+    rig.add(core);
+
+    const edgeGeometry = new THREE.EdgesGeometry(coreGeometry);
+    const edgeMaterial = new THREE.LineBasicMaterial({
+      color: 0xdce7ff,
+      transparent: true,
+      opacity: 0.5,
+    });
+    const edges = new THREE.LineSegments(edgeGeometry, edgeMaterial);
+    rig.add(edges);
+
+    const innerGeometry = new THREE.IcosahedronGeometry(0.82, 1);
+    const innerMaterial = new THREE.MeshBasicMaterial({
+      color: 0x72d4ff,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.54,
+    });
+    const inner = new THREE.Mesh(innerGeometry, innerMaterial);
+    rig.add(inner);
+
+    const particleGeometry = new THREE.BufferGeometry();
+    particleGeometry.setAttribute(
+      "position",
+      new THREE.BufferAttribute(createParticlePositions(), 3)
+    );
+    const particleMaterial = new THREE.PointsMaterial({
+      color: 0xdce7ff,
+      size: 0.025,
+      transparent: true,
+      opacity: 0.42,
+      depthWrite: false,
+    });
+    const particleField = new THREE.Points(particleGeometry, particleMaterial);
+    scene.add(particleField);
+
+    const grid = new THREE.GridHelper(18, 28, 0x72d4ff, 0xdce7ff);
+    grid.position.y = -2.35;
+    grid.position.z = -4;
+    grid.material.transparent = true;
+    grid.material.opacity = 0.12;
+    scene.add(grid);
+
+    const ambient = new THREE.AmbientLight(0xdce7ff, 0.75);
+    scene.add(ambient);
+
+    const keyLight = new THREE.PointLight(0x72d4ff, 3.2, 18);
+    keyLight.position.set(2.8, 3.4, 3.2);
+    scene.add(keyLight);
+
+    document.body.classList.add("has-webgl-scene");
+    window.__scrollDemoStatus.three = true;
+    window.__scrollDemoStatus.background = "three";
+
+    return {
+      THREE,
+      renderer,
+      scene,
+      camera,
+      rig,
+      core,
+      coreMaterial,
+      edgeMaterial,
+      inner,
+      particleField,
+      particleMaterial,
+      grid,
+      keyLight,
+    };
+  } catch (error) {
+    document.body.classList.remove("has-webgl-scene");
+    window.__scrollDemoStatus.three = false;
+    window.__scrollDemoStatus.background = "2d";
+    return null;
+  }
+}
+
+function resizeThreeScene() {
+  if (!threeScene) {
+    return;
+  }
+
+  threeScene.camera.aspect = viewportWidth / viewportHeight;
+  threeScene.camera.updateProjectionMatrix();
+  threeScene.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, DPR_LIMIT));
+  threeScene.renderer.setSize(viewportWidth, viewportHeight, false);
+}
+
+function renderThreeScene(scrollValue) {
+  const maxScroll = document.documentElement.scrollHeight - viewportHeight;
+  const progress = maxScroll > 0 ? clamp(scrollValue / maxScroll, 0, 1) : 0;
+  const chapterProgress = sections[activeIndex]
+    ? getSectionProgress(sections[activeIndex], scrollValue)
+    : 0;
+  const time = performance.now() * 0.001;
+  const travel = smoothstep(0.02, 0.98, progress);
+
+  threeScene.camera.position.x = Math.sin(progress * Math.PI * 2) * 0.45;
+  threeScene.camera.position.y = 1.05 + Math.sin(progress * Math.PI) * 0.34;
+  threeScene.camera.position.z = THREE_CAMERA_BASE_Z - travel * THREE_CAMERA_TRAVEL;
+  threeScene.camera.lookAt(0, 0, -1.6);
+
+  threeScene.rig.position.y = -0.1 + Math.sin(chapterProgress * Math.PI) * 0.22;
+  threeScene.rig.position.z = -1.1 - travel * 1.2;
+  threeScene.rig.rotation.x = progress * 0.72 + time * 0.05;
+  threeScene.rig.rotation.y = progress * 1.45 + time * 0.08;
+  threeScene.rig.rotation.z = Math.sin(progress * Math.PI * 2) * 0.18;
+
+  threeScene.inner.rotation.x = -progress * 2.4 + time * 0.18;
+  threeScene.inner.rotation.y = progress * 2.1 + time * 0.12;
+
+  threeScene.particleField.rotation.y = progress * 0.4 + time * 0.015;
+  threeScene.particleField.position.y = -progress * 0.9;
+
+  const hue = 0.56 + progress * 0.14;
+  threeScene.coreMaterial.color.setHSL(hue, 0.84, 0.58);
+  threeScene.coreMaterial.emissive.setHSL(hue, 0.8, 0.16);
+  threeScene.coreMaterial.opacity = 0.28 + Math.sin(chapterProgress * Math.PI) * 0.18;
+  threeScene.edgeMaterial.opacity = 0.3 + Math.sin(chapterProgress * Math.PI) * 0.36;
+  threeScene.particleMaterial.opacity = 0.24 + progress * 0.2;
+
+  threeScene.keyLight.position.x = Math.sin(progress * Math.PI * 2) * 4;
+  threeScene.keyLight.position.z = 3 - progress * 5;
+
+  threeScene.renderer.render(threeScene.scene, threeScene.camera);
 }
 
 function drawGrid(progress) {
@@ -228,6 +428,7 @@ function setupLenis() {
     wheelMultiplier: 0.9,
     touchMultiplier: 1.35,
   });
+  window.__scrollDemoStatus.lenis = true;
 
   instance.on("scroll", () => {
     if (window.ScrollTrigger) {
@@ -240,6 +441,7 @@ function setupLenis() {
 
 function setupScrollTimelines() {
   if (!window.gsap || !window.ScrollTrigger || HAS_REDUCED_MOTION) {
+    window.__scrollDemoStatus.gsap = false;
     return false;
   }
 
@@ -350,6 +552,7 @@ function setupScrollTimelines() {
   });
 
   window.ScrollTrigger.refresh();
+  window.__scrollDemoStatus.gsap = true;
   return true;
 }
 
@@ -388,6 +591,8 @@ navButtons.forEach((button) => {
 window.addEventListener("resize", resizeCanvas);
 splitHeadlines();
 resizeCanvas();
+threeScene = setupThreeScene();
+resizeThreeScene();
 lenis = setupLenis();
 isGsapMode = setupScrollTimelines();
 
