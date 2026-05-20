@@ -5,6 +5,76 @@ const DPR_LIMIT = 2;
 const THREE_PARTICLE_COUNT = 520;
 const THREE_CAMERA_BASE_Z = 8.5;
 const THREE_CAMERA_TRAVEL = 3.2;
+const SCENE_STATES = [
+  {
+    name: "origin",
+    hue: 0.56,
+    cameraX: -0.25,
+    cameraY: 1.06,
+    cameraZ: 8.8,
+    rigX: -0.18,
+    rigY: -0.18,
+    rigZ: -1.0,
+    rigScale: 0.94,
+    coreOpacity: 0.3,
+    edgeOpacity: 0.42,
+    particleOpacity: 0.24,
+    particleSpread: 0,
+    gridOpacity: 0.1,
+    lightIntensity: 2.6,
+  },
+  {
+    name: "signal",
+    hue: 0.52,
+    cameraX: 0.32,
+    cameraY: 1.28,
+    cameraZ: 7.5,
+    rigX: 0.2,
+    rigY: 0.05,
+    rigZ: -1.75,
+    rigScale: 1.06,
+    coreOpacity: 0.42,
+    edgeOpacity: 0.72,
+    particleOpacity: 0.48,
+    particleSpread: 0.65,
+    gridOpacity: 0.16,
+    lightIntensity: 4.4,
+  },
+  {
+    name: "method",
+    hue: 0.62,
+    cameraX: -0.48,
+    cameraY: 0.92,
+    cameraZ: 6.4,
+    rigX: -0.1,
+    rigY: 0.16,
+    rigZ: -2.2,
+    rigScale: 1.18,
+    coreOpacity: 0.36,
+    edgeOpacity: 0.62,
+    particleOpacity: 0.36,
+    particleSpread: 1,
+    gridOpacity: 0.22,
+    lightIntensity: 3.7,
+  },
+  {
+    name: "future",
+    hue: 0.68,
+    cameraX: 0.22,
+    cameraY: 1.5,
+    cameraZ: 5.8,
+    rigX: 0.08,
+    rigY: 0.32,
+    rigZ: -2.65,
+    rigScale: 0.88,
+    coreOpacity: 0.46,
+    edgeOpacity: 0.82,
+    particleOpacity: 0.58,
+    particleSpread: 1.35,
+    gridOpacity: 0.08,
+    lightIntensity: 5.2,
+  },
+];
 const HAS_REDUCED_MOTION = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 const sections = Array.from(document.querySelectorAll(SECTION_SELECTOR));
@@ -26,6 +96,7 @@ let isGsapMode = false;
 let threeScene = null;
 window.__scrollDemoStatus = {
   background: "2d",
+  sceneState: "fallback",
   lenis: false,
   gsap: false,
   three: false,
@@ -47,6 +118,31 @@ function mapRange(value, inMin, inMax, outMin, outMax) {
 function smoothstep(edge0, edge1, value) {
   const x = clamp((value - edge0) / (edge1 - edge0), 0, 1);
   return x * x * (3 - 2 * x);
+}
+
+function lerp(start, end, amount) {
+  return start + (end - start) * amount;
+}
+
+function interpolateSceneState(fromState, toState, amount) {
+  return Object.keys(fromState).reduce((state, key) => {
+    if (key === "name") {
+      return { ...state, name: amount < 0.5 ? fromState.name : toState.name };
+    }
+
+    return {
+      ...state,
+      [key]: lerp(fromState[key], toState[key], amount),
+    };
+  }, {});
+}
+
+function getSceneState(index, chapterProgress) {
+  const current = SCENE_STATES[index] || SCENE_STATES[0];
+  const next = SCENE_STATES[index + 1] || current;
+  const transitionAmount = smoothstep(0.66, 1, chapterProgress);
+
+  return interpolateSceneState(current, next, transitionAmount);
 }
 
 function resizeCanvas() {
@@ -162,6 +258,7 @@ function drawScene(scrollValue) {
 
 function createParticlePositions() {
   const positions = new Float32Array(THREE_PARTICLE_COUNT * 3);
+  const offsets = new Float32Array(THREE_PARTICLE_COUNT * 3);
 
   for (let index = 0; index < THREE_PARTICLE_COUNT; index += 1) {
     const stride = index * 3;
@@ -173,9 +270,13 @@ function createParticlePositions() {
     positions[stride] = Math.cos(angle) * radius;
     positions[stride + 1] = ((index * 19) % 140) / 14 - 5;
     positions[stride + 2] = Math.sin(angle) * radius - 5 - (lane % 6) * 0.35;
+
+    offsets[stride] = Math.cos(angle * 1.7) * (0.6 + (lane % 5) * 0.18);
+    offsets[stride + 1] = Math.sin(angle * 1.3) * (0.4 + (index % 9) * 0.05);
+    offsets[stride + 2] = Math.sin(angle * 1.9) * (0.8 + (lane % 7) * 0.14);
   }
 
-  return positions;
+  return { positions, offsets };
 }
 
 function setupThreeScene() {
@@ -237,9 +338,10 @@ function setupThreeScene() {
     rig.add(inner);
 
     const particleGeometry = new THREE.BufferGeometry();
+    const particlePositions = createParticlePositions();
     particleGeometry.setAttribute(
       "position",
-      new THREE.BufferAttribute(createParticlePositions(), 3)
+      new THREE.BufferAttribute(particlePositions.positions, 3)
     );
     const particleMaterial = new THREE.PointsMaterial({
       color: 0xdce7ff,
@@ -280,6 +382,9 @@ function setupThreeScene() {
       edgeMaterial,
       inner,
       particleField,
+      particleGeometry,
+      particleBasePositions: particlePositions.positions,
+      particleOffsets: particlePositions.offsets,
       particleMaterial,
       grid,
       keyLight,
@@ -311,14 +416,18 @@ function renderThreeScene(scrollValue) {
     : 0;
   const time = performance.now() * 0.001;
   const travel = smoothstep(0.02, 0.98, progress);
+  const sceneState = getSceneState(activeIndex, chapterProgress);
+  window.__scrollDemoStatus.sceneState = sceneState.name;
 
-  threeScene.camera.position.x = Math.sin(progress * Math.PI * 2) * 0.45;
-  threeScene.camera.position.y = 1.05 + Math.sin(progress * Math.PI) * 0.34;
-  threeScene.camera.position.z = THREE_CAMERA_BASE_Z - travel * THREE_CAMERA_TRAVEL;
+  threeScene.camera.position.x = sceneState.cameraX + Math.sin(progress * Math.PI * 2) * 0.16;
+  threeScene.camera.position.y = sceneState.cameraY + Math.sin(progress * Math.PI) * 0.12;
+  threeScene.camera.position.z = sceneState.cameraZ - travel * 0.45;
   threeScene.camera.lookAt(0, 0, -1.6);
 
-  threeScene.rig.position.y = -0.1 + Math.sin(chapterProgress * Math.PI) * 0.22;
-  threeScene.rig.position.z = -1.1 - travel * 1.2;
+  threeScene.rig.position.x = sceneState.rigX;
+  threeScene.rig.position.y = sceneState.rigY + Math.sin(chapterProgress * Math.PI) * 0.18;
+  threeScene.rig.position.z = sceneState.rigZ - travel * 0.28;
+  threeScene.rig.scale.setScalar(sceneState.rigScale);
   threeScene.rig.rotation.x = progress * 0.72 + time * 0.05;
   threeScene.rig.rotation.y = progress * 1.45 + time * 0.08;
   threeScene.rig.rotation.z = Math.sin(progress * Math.PI * 2) * 0.18;
@@ -329,17 +438,38 @@ function renderThreeScene(scrollValue) {
   threeScene.particleField.rotation.y = progress * 0.4 + time * 0.015;
   threeScene.particleField.position.y = -progress * 0.9;
 
-  const hue = 0.56 + progress * 0.14;
-  threeScene.coreMaterial.color.setHSL(hue, 0.84, 0.58);
-  threeScene.coreMaterial.emissive.setHSL(hue, 0.8, 0.16);
-  threeScene.coreMaterial.opacity = 0.28 + Math.sin(chapterProgress * Math.PI) * 0.18;
-  threeScene.edgeMaterial.opacity = 0.3 + Math.sin(chapterProgress * Math.PI) * 0.36;
-  threeScene.particleMaterial.opacity = 0.24 + progress * 0.2;
+  updateThreeParticles(sceneState, time);
+
+  threeScene.coreMaterial.color.setHSL(sceneState.hue, 0.84, 0.58);
+  threeScene.coreMaterial.emissive.setHSL(sceneState.hue, 0.8, 0.16);
+  threeScene.coreMaterial.opacity = sceneState.coreOpacity + Math.sin(chapterProgress * Math.PI) * 0.08;
+  threeScene.edgeMaterial.opacity = sceneState.edgeOpacity;
+  threeScene.particleMaterial.opacity = sceneState.particleOpacity;
+  threeScene.grid.material.opacity = sceneState.gridOpacity;
 
   threeScene.keyLight.position.x = Math.sin(progress * Math.PI * 2) * 4;
   threeScene.keyLight.position.z = 3 - progress * 5;
+  threeScene.keyLight.intensity = sceneState.lightIntensity;
 
   threeScene.renderer.render(threeScene.scene, threeScene.camera);
+}
+
+function updateThreeParticles(sceneState, time) {
+  const positions = threeScene.particleGeometry.attributes.position.array;
+  const base = threeScene.particleBasePositions;
+  const offsets = threeScene.particleOffsets;
+
+  for (let index = 0; index < THREE_PARTICLE_COUNT; index += 1) {
+    const stride = index * 3;
+    const pulse = Math.sin(time * 0.7 + index * 0.17) * 0.08;
+    const spread = sceneState.particleSpread + pulse;
+
+    positions[stride] = base[stride] + offsets[stride] * spread;
+    positions[stride + 1] = base[stride + 1] + offsets[stride + 1] * spread;
+    positions[stride + 2] = base[stride + 2] + offsets[stride + 2] * spread;
+  }
+
+  threeScene.particleGeometry.attributes.position.needsUpdate = true;
 }
 
 function drawGrid(progress) {

@@ -51,19 +51,20 @@ Before handing off changes:
 - The custom `tick()` loop still runs for progress UI and canvas drawing.
 - If GSAP is unavailable, `updateCards()` computes visibility from native scroll position.
 - Three.js rendering is the primary background path.
+- `SCENE_STATES` in `script.js` is the source of truth for per-chapter 3D camera, material, light, particle, and grid behavior.
 - 2D canvas rendering remains the fallback path and should stay isolated from DOM animation logic.
 
 ## Recommended Next Step
 
-The next meaningful upgrade is to polish the Three.js scene without making it shader-heavy.
+The next meaningful upgrade is to improve maintainability and observability before adding more visuals.
 
 Suggested scope:
 
-1. Add a small performance panel or debug flag for renderer status.
-2. Add per-chapter scene states for color, camera depth, and object composition.
-3. Add a lightweight image or environment texture only if it improves the story.
-4. Consider splitting `script.js` into `scroll.js`, `background-three.js`, and `background-2d.js` if the next change grows the file further.
-5. Add a Playwright verification script if this becomes more than a visual prototype.
+1. Split `script.js` into `scroll.js`, `background-three.js`, and `background-2d.js`.
+2. Add a small debug/status panel behind a query flag such as `?debug=1`.
+3. Add a Playwright verification script so browser checks are repeatable.
+4. Add a lightweight image or environment texture only if it improves the story.
+5. Add subtle post-processing only after performance checks are stable.
 
 Do not jump directly into shader-heavy effects. Keep the current scroll progress contract stable:
 DOM chapters, progress UI, Three.js background, and 2D fallback should all read the same progress state.
